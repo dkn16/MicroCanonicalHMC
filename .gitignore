@@ -12,5 +12,6 @@ mclmc.egg*
 *.mp4
 *.npy
 *.pdf
+./opt/data/*
 
 .ipynb_checkpoints

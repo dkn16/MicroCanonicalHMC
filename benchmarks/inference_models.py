@@ -1,4 +1,5 @@
 #from inference_gym import using_jax as gym
+import time
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -22,6 +23,95 @@ dirr = os.path.dirname(os.path.realpath(__file__)) + '/'
 
 rng_inference_gym_icg = 10 & (2 ** 32 - 1)
             
+class StochasticGaussian():
+    """Gaussian distribution. It has zero mean and is therefore completely specified by the covariance matrix. """
+
+
+    def __init__(self, ndims, condition_number= 1, eigenvalues= 'log', numpy_seed=None, initialization= 'wide', stochastic_grad = 0.):
+        """Args:
+            
+            ndims: dimensionality
+            
+            condition_number: ratio of the largest to smallest eigenvalue of the covariance matrix.
+            
+            eigenvalues: determines the eigenvalues of the covariance matrix. Can be one of the:
+                                'linear': equally spaced eigenvalues
+                                'log': equally spaced in log
+                                'Gamma': randomly drawn from the Gamma distribution. 'condition_number' is ignored in this case.
+                                'outliers': ndims - K eigenvalues are 1, K eigenvalues are equal to the condition_number. K = 2.
+            
+            numpy_seed: By default covariance matrix is diagonal. You can randomly rotate it by passing this argument. Seed is used to generate a random rotation for the covariance matrix.
+            
+            initialization: Which strategy to use to initialize chains. Can be one of the
+                                'mode': start from the mode of the distribution (x=0).
+                                'posterior': start already in the target distribution.
+                                'wide': start from the isotropic Gaussian with the scale set by the largest eigenvalue of the target's covariance matrix.
+        """
+
+        self.name = 'Gaussian_' + eigenvalues + '_' + str(condition_number)
+        self.ndims = ndims
+        self.condition_number = condition_number
+        
+        if numpy_seed != None:
+            rng = np.random.RandomState(seed=numpy_seed)
+        else:
+            rng = np.random.RandomState(seed=jax.random.PRNGKey(0))
+
+
+        # fix the eigenvalues of the covariance matrix
+        if eigenvalues == 'linear':
+            eigs = jnp.linspace(1./condition_number, 1, ndims)
+        elif eigenvalues == 'log':
+            eigs = jnp.logspace(-0.5 * jnp.log10(condition_number), 0.5 * jnp.log10(condition_number), ndims)
+        elif eigenvalues == 'Gamma':
+            eigs = 1./np.sort(rng.gamma(shape=0.5, scale=1., size=ndims)) #eigenvalues of the Hessian
+            eigs /= jnp.average(eigs)
+        elif eigenvalues == 'outliers':
+            num_outliers = 2
+            eigs = jnp.concatenate((jnp.ones(num_outliers) * condition_number, jnp.ones(ndims-num_outliers)))
+        else:
+            raise ValueError('eigenvalues = '+ str(eigenvalues) + ' is not a valid option.')
+
+        if numpy_seed == None:  # diagonal covariance matrix
+            self.E_x2 = eigs
+            #self.R = jnp.eye(ndims)
+            self.inv_cov = 1. / eigs
+            self.cov = eigs
+            self.logdensity_fn = lambda x: -0.5 * jnp.sum(jnp.square(x) * self.inv_cov + jnp.sum(jax.random.normal(jax.random.PRNGKey(seed = time.time_ns() % (2**32)), shape=(x.shape))  * x))* stochastic_grad
+
+        else:  # randomly rotate
+            D = jnp.diag(eigs)
+            inv_D = jnp.diag(1 / eigs)
+            R, _ = jnp.array(np.linalg.qr(rng.randn(ndims, ndims)))  # random rotation
+            self.R = R
+            self.inv_cov = R @ inv_D @ R.T
+            self.cov = R @ D @ R.T
+            self.E_x2 = jnp.diagonal(R @ D @ R.T)
+
+            #cov_precond = jnp.diag(1 / jnp.sqrt(self.E_x2)) @ self.cov @ jnp.diag(1 / jnp.sqrt(self.E_x2))
+            #print(jnp.linalg.cond(cov_precond) / jnp.linalg.cond(self.cov))
+
+            self.logdensity_fn = lambda x: -0.5 * x.T @ self.inv_cov @ x #+ jnp.sum(jax.random.normal(jax.random.PRNGKey(seed = time.time_ns() % (2**32)), shape=(x.shape)) * stochastic_grad * x)
+
+        self.E_x = jnp.zeros(ndims)
+        self.Var_x2 = 2 * jnp.square(self.E_x2)
+
+
+        self.transform = lambda x: x
+        
+
+        if initialization == 'map':
+            self.sample_init = lambda key: jnp.zeros(ndims)
+
+        elif initialization == 'posterior':
+            self.sample_init = lambda key: self.R @ (jax.random.normal(key, shape=(ndims,)) * jnp.sqrt(eigs))
+
+        elif initialization == 'wide': # N(0, sigma_true_max)
+            self.sample_init = lambda key: jax.random.normal(key, shape=(ndims,)) * jnp.max(jnp.sqrt(eigs)) #* 1.3
+        else:
+            raise ValueError('initialization = '+ str(initialization) + ' is not a valid option.')
+            
+
 class Gaussian():
     """Gaussian distribution. It has zero mean and is therefore completely specified by the covariance matrix. """
 
