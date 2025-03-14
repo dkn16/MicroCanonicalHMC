@@ -2,7 +2,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-import os
+import os,time
 #import numpyro.distributions as dist
 dirr = os.path.dirname(os.path.realpath(__file__)) + '/'
 
@@ -19,6 +19,28 @@ dirr = os.path.dirname(os.path.realpath(__file__)) + '/'
 #   - Var_x2 = [Var[x_i^2] for i in range(ndims)]
 
 
+class StochasticStandardNormal():
+    """Standard Normal distribution in d dimensions"""
+
+    def __init__(self, d,stochastic_grad):
+        self.name = 'StandardNormal'
+        self.ndims = d
+        self.stochastic_grad = stochastic_grad
+        
+        self.E_x = jnp.zeros(d)
+        self.E_x2 = jnp.ones(d)
+        self.Var_x2 = 2 * self.E_x2
+        self.inv_cov = jnp.eye(d)
+        self.cov = jnp.eye(d)
+        
+        self.transform = lambda x: x
+        
+        
+    def logdensity_fn(self, x):
+        return -0.5 * jnp.sum(jnp.square(x), axis= -1) + jnp.sum(jax.random.normal(jax.random.PRNGKey(seed = time.time_ns() % (2**32)), shape=(x.shape))  * x)* self.stochastic_grad
+
+    def sample_init(self, key):
+        return jax.random.normal(key, shape = (self.ndims, )) 
 
 class StandardNormal():
     """Standard Normal distribution in d dimensions"""
